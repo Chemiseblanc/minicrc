@@ -44,6 +44,7 @@
 #endif
 
 // Compiler warning control
+// We want to compile with all warnings on and only supress them where needed.
 #if defined(_MSC_VER) && !defined(__INTEL_COMPILER)
 #define MINICRC_WARNING_PUSH _Pragma("warning(push)")
 #define MINICRC_WARNING_POP _Pragma("warning(pop)")
@@ -141,6 +142,9 @@ using byte = unsigned char;
 #endif
 
 // Concepts
+// This is done to provide improved error messages and compile speeds
+// on systems supporting C++20 concepts while still falling back to
+// SFINAE on older compilers.
 #define MINICRC_CONCEPTS_NONE 0
 #define MINICRC_CONCEPTS_SFINAE 1
 #define MINICRC_CONCEPTS_NATIVE 2
@@ -266,6 +270,12 @@ struct borrows_lut {};
 struct fixed_lut {};
 
 namespace detail {
+/**
+* @brief Reverse the bit representation of an integral type
+* @tparam N length of the type in bits
+* @tparam T unsigned integer type representing a list of bits
+* @param t bit list to reverse
+*/
 template <std::size_t N, MINICRC_REQUIRES(unsigned_integral, T)>
 MINICRC_EXTENDED_CONSTEXPR T bit_reverse(T t) noexcept {
   remove_cvref_t<T> reversed{0};
@@ -275,6 +285,11 @@ MINICRC_EXTENDED_CONSTEXPR T bit_reverse(T t) noexcept {
   return reversed;
 }
 
+/**
+* @brief Generate a mask of N '1' bits for a given size
+* @tparam N number of bits to mask
+* @tparam T type holding the underlying list of bits
+*/
 template <std::size_t N, MINICRC_REQUIRES(unsigned_integral, T)>
 MINICRC_EXTENDED_CONSTEXPR T bit_mask() {
   MINICRC_IF_CONSTEXPR(N == sizeof(T) * CHAR_BIT) {
@@ -290,6 +305,12 @@ template <MINICRC_REQUIRES(unsigned_integral, Underlying)>
 using lut_type =
     std::array<Underlying, std::numeric_limits<unsigned char>::max() + 1>;
 
+/**
+* @brief Generate a CRC lookup table for an owning type
+* @tparam N size of the CRC
+* @tparam Underlying type holding a list of N bits
+* @param poly polynomial describing the CRC
+*/
 template <std::size_t N, MINICRC_REQUIRES(unsigned_integral, Underlying)>
 MINICRC_ARRAY_CONSTEXPR lut_type<Underlying> generate_crc_lut(
     owns_lut, Underlying poly) noexcept {
@@ -309,6 +330,12 @@ MINICRC_ARRAY_CONSTEXPR lut_type<Underlying> generate_crc_lut(
   return lut;
 }
 
+/**
+* @brief Generate and store a CRC lookup table if it doesn't already exist
+* @tparam N size of the CRC
+* @tparam Underlying type holding the list of N bits
+* @param poly polynomial describing the CRC
+*/
 template <std::size_t N, MINICRC_REQUIRES(unsigned_integral, Underlying)>
 MINICRC_STATICVAR_CONSTEXPR const lut_type<Underlying>& generate_crc_lut(
     borrows_lut, Underlying poly) noexcept {
@@ -326,6 +353,8 @@ template <std::size_t N, MINICRC_REQUIRES(unsigned_integral, Underlying)>
 constexpr Underlying generate_crc_lut(fixed_lut, Underlying poly) noexcept {
   return poly;
 }
+
+// Partial specializations for handling lut type lookup.
 
 template <typename T, typename Underlying>
 struct lookup_table {};
@@ -370,6 +399,9 @@ struct all_zero {
   }
 };
 
+/**
+* @brief flags describg if input and output vectors should be reflected before/after computing the CRC checksum
+*/
 enum class flags : unsigned char {
   no_reflect = 0,
   reflect_input = 1,
@@ -388,6 +420,17 @@ constexpr bool operator&(flags a, flags b) {
 namespace impl {
 MINICRC_WARNING_PUSH
 MINICRC_DISABLE_C4333
+/**
+* @brief basic software implementation for computing a general CRC checksum.
+* @tparam N bits of the CRC
+* @tparam T type of the data the CRC is being computed on. Must be same sizeof as std::byte
+* @tparam Underlying type holding the CRC state.
+* @param stored_flags setting flag for reflecting input
+* @param lut crc lookup table
+* @param state current crc result
+* @param ptr pointer to data the checksum is being computed for
+* @param size length of data the checksum is being computed for
+*/
 template <std::size_t N, typename T,
           MINICRC_REQUIRES(unsigned_integral, Underlying)>
 MINICRC_EXTENDED_CONSTEXPR Underlying
@@ -409,7 +452,10 @@ crc_software(const flags& stored_flags, const detail::lut_type<Underlying>& lut,
   return state;
 }
 MINICRC_WARNING_POP
-
+/*
+* TODO: Implement hardware accelerated versions of the checksum for different architectures,
+*       currently just defaulting to basic software implementation.
+*/
 #if MINICRC_ARCH == MINICRC_ARCH_AMD64
 #ifndef MINICRC_HW_ENTRYPOINT
 #define MINICRC_HW_ENTRYPOINT crc_hardware_amd64
@@ -451,6 +497,12 @@ Underlying crc_hardware(const flags& stored_flags,
 }
 }  // namespace impl
 
+/**
+* @brief class implementing interface for general crc checksums.
+* @tparam N number of bits in the CRC checksum
+* @tparam should_build_lut tag for how the lookup table should be stored.
+* @tparam Underlying unsigned integer type storing the crc state. Must be at least N bits.
+*/
 template <std::size_t N, typename should_build_lut = borrows_lut,
           typename Underlying = uint_least_t<N>>
 class crc {
@@ -496,6 +548,8 @@ class crc {
   template <MINICRC_REQUIRES(byte_sized, T)>
   MINICRC_EXTENDED_CONSTEXPR crc& operator()(T* ptr,
                                              std::size_t size) noexcept {
+    // If this is being called in a constexpr setting use the constexpr implementation
+    // instead of a hardware accelerated one.
     MINICRC_IF_IS_CONSTEVAL {
       state = impl::crc_software<N, T, Underlying>(stored_flags, lut, state,
                                                    ptr, size);
@@ -549,6 +603,7 @@ class crc {
 };
 
 #ifdef MINICRC_LIBRARY
+// Predefine some standard CRC checksums.
 static MINICRC_ARRAY_CONSTEXPR const crc<32>::owning_type crc32{
     crc<32>::normal_poly{0x04C11DB7}, crc<32>::all_one{}, crc<32>::all_one{},
     flags::reflect};
